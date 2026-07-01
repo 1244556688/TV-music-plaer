@@ -1,0 +1,6 @@
+{
+  "name": "TV Music Player",
+  "description": "A minimalist, remote-controlled music player designed specifically for Smart TVs with beautiful immersive screensavers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
