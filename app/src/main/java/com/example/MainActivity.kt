@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
                             uris.forEach { uri ->
                                 val meta = getAudioFileMetadata(context, uri)
                                 viewModel.importAudioFile(
-                                    uriString = uri.toString(),
+                                    uriString = meta.localPath ?: uri.toString(),
                                     fileName = meta.fileName,
                                     durationMs = meta.durationMs
                                 )
@@ -117,12 +117,13 @@ class MainActivity : ComponentActivity() {
 }
 
 // Data class to hold metadata extracted from chosen Uri
-data class AudioMetadata(val fileName: String, val durationMs: Long)
+data class AudioMetadata(val fileName: String, val durationMs: Long, val localPath: String? = null)
 
 // Helper function to extract audio file name and duration safely on a background thread
 suspend fun getAudioFileMetadata(context: Context, uri: Uri): AudioMetadata = withContext(Dispatchers.IO) {
     var name = "Imported Track"
     var duration = 180000L // default 3 minutes
+    var localPath: String? = null
 
     // Retrieve file name
     try {
@@ -136,10 +137,29 @@ suspend fun getAudioFileMetadata(context: Context, uri: Uri): AudioMetadata = wi
         name = uri.lastPathSegment ?: "Imported Track"
     }
 
+    // Copy file to internal storage for reliable offline persistent playback
+    try {
+        val cleanName = name.replace("[^a-zA-Z0-9.-]".toRegex(), "_")
+        val uniqueName = "${System.currentTimeMillis()}_$cleanName"
+        val destFile = java.io.File(context.filesDir, uniqueName)
+        context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            java.io.FileOutputStream(destFile).use { outputStream ->
+                inputStream.copyTo(outputStream)
+            }
+        }
+        localPath = destFile.absolutePath
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+
     // Retrieve track duration
     try {
         val retriever = MediaMetadataRetriever()
-        retriever.setDataSource(context, uri)
+        if (localPath != null) {
+            retriever.setDataSource(localPath)
+        } else {
+            retriever.setDataSource(context, uri)
+        }
         val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
         if (durationStr != null) {
             duration = durationStr.toLong()
@@ -149,5 +169,5 @@ suspend fun getAudioFileMetadata(context: Context, uri: Uri): AudioMetadata = wi
         // Fallback if media metadata retriever fails on emulator files
     }
 
-    AudioMetadata(fileName = name, durationMs = duration)
+    AudioMetadata(fileName = name, durationMs = duration, localPath = localPath)
 }
