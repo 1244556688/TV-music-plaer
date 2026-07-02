@@ -131,6 +131,12 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
         if (_isPlaying.value) {
             startPlaybackTimer()
         }
+        if (_isCastingActive.value) {
+            castPlaySong(song)
+            if (!_isPlaying.value) {
+                castSendCommand("SET_PLAYING|false")
+            }
+        }
     }
 
     fun togglePlayPause() {
@@ -145,7 +151,7 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
             playbackJob?.cancel()
         }
         if (_isCastingActive.value) {
-            castSendCommand("TOGGLE_PLAY")
+            castSendCommand("SET_PLAYING|$nextPlaying")
         }
     }
 
@@ -304,6 +310,7 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
     private fun startPlaybackTimer() {
         playbackJob?.cancel()
         playbackJob = viewModelScope.launch {
+            var tickCount = 0
             while (isActive) {
                 delay(1000)
                 val currentSongVal = _currentSong.value ?: break
@@ -321,6 +328,14 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
                     } else {
                         handleSongCompletion()
                         break
+                    }
+                }
+
+                // Sync elapsed time to TV every 2 seconds if casting is active
+                if (_isCastingActive.value) {
+                    tickCount++
+                    if (tickCount % 2 == 0) {
+                        castSendCommand("SET_ELAPSED|${_elapsedTimeMs.value}")
                     }
                 }
             }
@@ -370,11 +385,16 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun playAudio(song: Song) {
         if (_isCastingActive.value) {
+            // When casting is active, the tablet itself should not play/emit sound (remain silent).
+            // Stop any active local audio generators (synth or media player).
             stopSynth()
             stopMediaPlayer()
+            // Send play command to TV
             castPlaySong(song)
             return
         }
+
+        // Play locally if not casting
         val fileUri = song.fileUri
         if (!fileUri.isNullOrEmpty()) {
             stopSynth()
@@ -395,6 +415,11 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
             }
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+
+        // Sync pause to TV if casting is active
+        if (_isCastingActive.value) {
+            castSendCommand("SET_PLAYING|false")
         }
     }
 
@@ -649,21 +674,55 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
                             val durationMs = parts[3].toLongOrNull() ?: 180000L
                             val fileUri = parts[4]
                             
-                            val rxSong = Song(
-                                id = "remote_cast_track",
-                                title = title,
-                                artist = artist,
-                                durationMs = durationMs,
-                                albumArtRes = null,
-                                genre = "TV Cast",
-                                fileUri = fileUri.ifBlank { null }
-                            )
+                            val existingSong = songsList.value.find {
+                                it.title.equals(title, ignoreCase = true) &&
+                                it.artist.equals(artist, ignoreCase = true)
+                            }
                             
-                            _currentSong.value = rxSong
-                            _elapsedTimeMs.value = 0L
-                            _isPlaying.value = true
-                            updatePlaybackState()
-                            startPlaybackTimer()
+                            if (existingSong != null) {
+                                _currentSong.value = existingSong
+                                _elapsedTimeMs.value = 0L
+                                _isPlaying.value = true
+                                _isScreensaverActive.value = true // Automatically open screensaver when casting begins
+                                updatePlaybackState()
+                                startPlaybackTimer()
+                            } else {
+                                val rxSong = Song(
+                                    id = "remote_" + System.currentTimeMillis() + "_" + random.nextInt(100),
+                                    title = title,
+                                    artist = artist,
+                                    durationMs = durationMs,
+                                    albumArtRes = null,
+                                    genre = "TV Cast",
+                                    fileUri = fileUri.ifBlank { null }
+                                )
+                                // Insert into database so it gets added to the TV's local playlist
+                                repository.insertSong(rxSong)
+                                
+                                _currentSong.value = rxSong
+                                _elapsedTimeMs.value = 0L
+                                _isPlaying.value = true
+                                _isScreensaverActive.value = true // Automatically open screensaver when casting begins
+                                updatePlaybackState()
+                                startPlaybackTimer()
+                            }
+                        }
+                    }
+                    "OPEN_SCREENSAVER" -> {
+                        _isScreensaverActive.value = true
+                    }
+                    "SET_PLAYING" -> {
+                        if (parts.size >= 2) {
+                            val targetPlaying = parts[1].toBoolean()
+                            if (_isPlaying.value != targetPlaying) {
+                                _isPlaying.value = targetPlaying
+                                updatePlaybackState()
+                                if (targetPlaying) {
+                                    startPlaybackTimer()
+                                } else {
+                                    playbackJob?.cancel()
+                                }
+                            }
                         }
                     }
                     "TOGGLE_PLAY" -> {
@@ -720,10 +779,22 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
                 // Start local stream server so TV can stream our local audio files
                 startAudioHttpServer()
                 
+                // Stop local physical audio playing on the tablet immediately, but keep UI playing state active
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    stopSynth()
+                    stopMediaPlayer()
+                }
+                
+                // Tell the TV to automatically activate screensaver mode
+                castSendCommand("OPEN_SCREENSAVER")
+                
                 // Immediately stream current song if playing
                 val current = _currentSong.value
                 if (current != null) {
                     castPlaySong(current)
+                    if (!_isPlaying.value) {
+                        castSendCommand("SET_PLAYING|false")
+                    }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -751,6 +822,14 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
             e.printStackTrace()
         }
         castSocket = null
+
+        // Resume local audio playback if we were playing
+        if (_isPlaying.value) {
+            val current = _currentSong.value
+            if (current != null) {
+                playAudio(current)
+            }
+        }
     }
 
     private fun startAudioHttpServer() {
@@ -767,6 +846,13 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
                             val reader = java.io.BufferedReader(java.io.InputStreamReader(input))
                             val requestLine = reader.readLine() ?: ""
                             
+                            // Read and consume all headers to prevent TCP RST on socket close
+                            var headerLine: String?
+                            while (true) {
+                                headerLine = reader.readLine()
+                                if (headerLine.isNullOrEmpty()) break
+                            }
+                            
                             if (requestLine.startsWith("GET")) {
                                 val currentSongVal = _currentSong.value
                                 val localUri = currentSongVal?.fileUri
@@ -778,6 +864,7 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
                                         output.write("HTTP/1.1 200 OK\r\n".toByteArray())
                                         output.write("Content-Type: audio/mpeg\r\n".toByteArray())
                                         output.write("Content-Length: ${file.length()}\r\n".toByteArray())
+                                        output.write("Accept-Ranges: bytes\r\n".toByteArray())
                                         output.write("Connection: close\r\n\r\n".toByteArray())
                                         
                                         file.inputStream().use { fileInput ->
@@ -790,6 +877,7 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
                                             context.contentResolver.openInputStream(uri)?.use { contentInput ->
                                                 output.write("HTTP/1.1 200 OK\r\n".toByteArray())
                                                 output.write("Content-Type: audio/mpeg\r\n".toByteArray())
+                                                output.write("Accept-Ranges: bytes\r\n".toByteArray())
                                                 output.write("Connection: close\r\n\r\n".toByteArray())
                                                 contentInput.copyTo(output)
                                             }
