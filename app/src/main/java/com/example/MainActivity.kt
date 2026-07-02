@@ -50,6 +50,13 @@ class MainActivity : ComponentActivity() {
                 val isShuffle by viewModel.isShuffle.collectAsState()
                 val isScreensaverActive by viewModel.isScreensaverActive.collectAsState()
 
+                // Observe casting states
+                val isTvReceiverMode by viewModel.isTvReceiverMode.collectAsState()
+                val tvReceiverIp by viewModel.tvReceiverIp.collectAsState()
+                val isCastingActive by viewModel.isCastingActive.collectAsState()
+                val targetTvIp by viewModel.targetTvIp.collectAsState()
+                val castStatusMessage by viewModel.castStatusMessage.collectAsState()
+
                 // File Picker Launcher to choose multiple audio files from device
                 val filePickerLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.GetMultipleContents()
@@ -87,6 +94,15 @@ class MainActivity : ComponentActivity() {
                             volume = volume,
                             loopMode = loopMode,
                             isShuffle = isShuffle,
+                            isTvReceiverMode = isTvReceiverMode,
+                            tvReceiverIp = tvReceiverIp,
+                            isCastingActive = isCastingActive,
+                            targetTvIp = targetTvIp,
+                            castStatusMessage = castStatusMessage,
+                            onStartTvReceiver = { viewModel.startTvReceiver() },
+                            onStopTvReceiver = { viewModel.stopTvReceiver() },
+                            onConnectToTv = { viewModel.connectToTv(it) },
+                            onDisconnectCast = { viewModel.disconnectCast() },
                             onSongSelect = { viewModel.selectSong(it) },
                             onPlayPauseToggle = { viewModel.togglePlayPause() },
                             onNextSong = { viewModel.nextSong() },

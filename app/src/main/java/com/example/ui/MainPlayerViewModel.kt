@@ -65,6 +65,21 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
     private val _lastActivityTime = MutableStateFlow(System.currentTimeMillis())
     val lastActivityTime = _lastActivityTime.asStateFlow()
 
+    private val _isTvReceiverMode = MutableStateFlow(false)
+    val isTvReceiverMode = _isTvReceiverMode.asStateFlow()
+
+    private val _tvReceiverIp = MutableStateFlow("")
+    val tvReceiverIp = _tvReceiverIp.asStateFlow()
+
+    private val _isCastingActive = MutableStateFlow(false)
+    val isCastingActive = _isCastingActive.asStateFlow()
+
+    private val _targetTvIp = MutableStateFlow("")
+    val targetTvIp = _targetTvIp.asStateFlow()
+
+    private val _castStatusMessage = MutableStateFlow("未連接 (Disconnected)")
+    val castStatusMessage = _castStatusMessage.asStateFlow()
+
     private var playbackJob: Job? = null
     private var inactivityJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
@@ -128,6 +143,9 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
             startPlaybackTimer()
         } else {
             playbackJob?.cancel()
+        }
+        if (_isCastingActive.value) {
+            castSendCommand("TOGGLE_PLAY")
         }
     }
 
@@ -197,12 +215,18 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
             _volume.value = (currentVolume - 5).coerceAtLeast(0)
         }
         updateMediaPlayerVolume()
+        if (_isCastingActive.value) {
+            castSendCommand("SET_VOLUME|${_volume.value}")
+        }
     }
 
     fun setVolume(newVolume: Int) {
         resetInactivityTimer()
         _volume.value = newVolume.coerceIn(0, 100)
         updateMediaPlayerVolume()
+        if (_isCastingActive.value) {
+            castSendCommand("SET_VOLUME|${_volume.value}")
+        }
     }
 
     fun toggleLoopMode() {
@@ -345,6 +369,12 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun playAudio(song: Song) {
+        if (_isCastingActive.value) {
+            stopSynth()
+            stopMediaPlayer()
+            castPlaySong(song)
+            return
+        }
         val fileUri = song.fileUri
         if (!fileUri.isNullOrEmpty()) {
             stopSynth()
@@ -530,11 +560,307 @@ class MainPlayerViewModel(application: Application) : AndroidViewModel(applicati
         audioTrack = null
     }
 
+    // ==================== LOCAL CAST NETWORK ENGINE ====================
+    private var tvCommandServer: java.net.ServerSocket? = null
+    private var tvCommandServerJob: Job? = null
+    
+    private var castSocket: java.net.Socket? = null
+    private var castWriter: java.io.PrintWriter? = null
+    private var castJob: Job? = null
+
+    private var audioHttpServer: java.net.ServerSocket? = null
+    private var audioHttpServerJob: Job? = null
+
+    fun getLocalIpAddress(): String {
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val networkInterface = interfaces.nextElement()
+                val addresses = networkInterface.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val address = addresses.nextElement()
+                    if (!address.isLoopbackAddress && address is java.net.Inet4Address) {
+                        return address.hostAddress ?: "Unknown"
+                    }
+                }
+            }
+        } catch (ex: Exception) {
+            ex.printStackTrace()
+        }
+        return "127.0.0.1"
+    }
+
+    fun startTvReceiver() {
+        val ip = getLocalIpAddress()
+        _tvReceiverIp.value = ip
+        _isTvReceiverMode.value = true
+        
+        tvCommandServerJob?.cancel()
+        tvCommandServerJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Try listening on port 8888
+                val server = java.net.ServerSocket(8888)
+                tvCommandServer = server
+                while (isActive) {
+                    val socket = server.accept()
+                    launch(Dispatchers.IO) {
+                        try {
+                            val reader = java.io.BufferedReader(java.io.InputStreamReader(socket.getInputStream()))
+                            while (isActive) {
+                                val line = reader.readLine() ?: break
+                                handleRemoteCommand(line)
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        } finally {
+                            try { socket.close() } catch (ex: Exception) {}
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun stopTvReceiver() {
+        _isTvReceiverMode.value = false
+        tvCommandServerJob?.cancel()
+        tvCommandServerJob = null
+        try {
+            tvCommandServer?.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        tvCommandServer = null
+    }
+
+    private fun handleRemoteCommand(command: String) {
+        viewModelScope.launch(Dispatchers.Main) {
+            try {
+                val parts = command.split("|")
+                if (parts.isEmpty()) return@launch
+                
+                when (parts[0]) {
+                    "PLAY_SONG" -> {
+                        if (parts.size >= 5) {
+                            val title = parts[1]
+                            val artist = parts[2]
+                            val durationMs = parts[3].toLongOrNull() ?: 180000L
+                            val fileUri = parts[4]
+                            
+                            val rxSong = Song(
+                                id = "remote_cast_track",
+                                title = title,
+                                artist = artist,
+                                durationMs = durationMs,
+                                albumArtRes = null,
+                                genre = "TV Cast",
+                                fileUri = fileUri.ifBlank { null }
+                            )
+                            
+                            _currentSong.value = rxSong
+                            _elapsedTimeMs.value = 0L
+                            _isPlaying.value = true
+                            updatePlaybackState()
+                            startPlaybackTimer()
+                        }
+                    }
+                    "TOGGLE_PLAY" -> {
+                        togglePlayPause()
+                    }
+                    "NEXT" -> {
+                        nextSong()
+                    }
+                    "PREV" -> {
+                        previousSong()
+                    }
+                    "SET_VOLUME" -> {
+                        if (parts.size >= 2) {
+                            val vol = parts[1].toIntOrNull() ?: 75
+                            setVolume(vol)
+                        }
+                    }
+                    "SET_ELAPSED" -> {
+                        if (parts.size >= 2) {
+                            val elapsed = parts[1].toLongOrNull() ?: 0L
+                            _elapsedTimeMs.value = elapsed
+                            mediaPlayer?.let {
+                                if (elapsed < it.duration) {
+                                    it.seekTo(elapsed.toInt())
+                                }
+                            }
+                        }
+                    }
+                    "CLEAR_PLAYLIST" -> {
+                        clearPlaylist()
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun connectToTv(ip: String) {
+        _targetTvIp.value = ip
+        _castStatusMessage.value = "正在連接至 $ip..."
+        
+        castJob?.cancel()
+        castJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val socket = java.net.Socket()
+                socket.connect(java.net.InetSocketAddress(ip, 8888), 6000)
+                castSocket = socket
+                castWriter = java.io.PrintWriter(java.io.BufferedWriter(java.io.OutputStreamWriter(socket.getOutputStream())), true)
+                
+                _isCastingActive.value = true
+                _castStatusMessage.value = "已成功連接至電視 ($ip)"
+                
+                // Start local stream server so TV can stream our local audio files
+                startAudioHttpServer()
+                
+                // Immediately stream current song if playing
+                val current = _currentSong.value
+                if (current != null) {
+                    castPlaySong(current)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _isCastingActive.value = false
+                _castStatusMessage.value = "連接失敗: ${e.localizedMessage ?: "請檢查 IP 是否正確"}"
+            }
+        }
+    }
+
+    fun disconnectCast() {
+        _isCastingActive.value = false
+        _castStatusMessage.value = "已中斷連接"
+        stopAudioHttpServer()
+        castJob?.cancel()
+        castJob = null
+        try {
+            castWriter?.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        castWriter = null
+        try {
+            castSocket?.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        castSocket = null
+    }
+
+    private fun startAudioHttpServer() {
+        stopAudioHttpServer()
+        audioHttpServerJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val server = java.net.ServerSocket(8889)
+                audioHttpServer = server
+                while (isActive) {
+                    val socket = server.accept()
+                    launch(Dispatchers.IO) {
+                        try {
+                            val input = socket.getInputStream()
+                            val reader = java.io.BufferedReader(java.io.InputStreamReader(input))
+                            val requestLine = reader.readLine() ?: ""
+                            
+                            if (requestLine.startsWith("GET")) {
+                                val currentSongVal = _currentSong.value
+                                val localUri = currentSongVal?.fileUri
+                                
+                                if (localUri != null) {
+                                    val output = socket.getOutputStream()
+                                    val file = java.io.File(localUri)
+                                    if (file.exists()) {
+                                        output.write("HTTP/1.1 200 OK\r\n".toByteArray())
+                                        output.write("Content-Type: audio/mpeg\r\n".toByteArray())
+                                        output.write("Content-Length: ${file.length()}\r\n".toByteArray())
+                                        output.write("Connection: close\r\n\r\n".toByteArray())
+                                        
+                                        file.inputStream().use { fileInput ->
+                                            fileInput.copyTo(output)
+                                        }
+                                    } else {
+                                        try {
+                                            val context = getApplication<Application>()
+                                            val uri = Uri.parse(localUri)
+                                            context.contentResolver.openInputStream(uri)?.use { contentInput ->
+                                                output.write("HTTP/1.1 200 OK\r\n".toByteArray())
+                                                output.write("Content-Type: audio/mpeg\r\n".toByteArray())
+                                                output.write("Connection: close\r\n\r\n".toByteArray())
+                                                contentInput.copyTo(output)
+                                            }
+                                        } catch (ex: Exception) {
+                                            output.write("HTTP/1.1 404 Not Found\r\n\r\n".toByteArray())
+                                        }
+                                    }
+                                    output.flush()
+                                } else {
+                                    val output = socket.getOutputStream()
+                                    output.write("HTTP/1.1 404 Not Found\r\n\r\n".toByteArray())
+                                    output.flush()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        } finally {
+                            try { socket.close() } catch (ex: Exception) {}
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun stopAudioHttpServer() {
+        audioHttpServerJob?.cancel()
+        audioHttpServerJob = null
+        try {
+            audioHttpServer?.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        audioHttpServer = null
+    }
+
+    private fun castSendCommand(command: String) {
+        val writer = castWriter
+        if (writer != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    writer.println(command)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    fun castPlaySong(song: Song) {
+        if (!_isCastingActive.value) return
+        val phoneIp = getLocalIpAddress()
+        val streamUri = if (!song.fileUri.isNullOrEmpty()) {
+            "http://$phoneIp:8889/stream"
+        } else {
+            ""
+        }
+        val cmd = "PLAY_SONG|${song.title}|${song.artist}|${song.durationMs}|$streamUri"
+        castSendCommand(cmd)
+    }
+
     override fun onCleared() {
         super.onCleared()
         playbackJob?.cancel()
         inactivityJob?.cancel()
         stopSynth()
         stopMediaPlayer()
+        stopTvReceiver()
+        disconnectCast()
+        stopAudioHttpServer()
     }
 }

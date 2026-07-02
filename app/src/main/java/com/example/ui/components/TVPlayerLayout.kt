@@ -59,9 +59,19 @@ fun TVPlayerLayout(
     onClearPlaylist: () -> Unit,
     onImportLocalFiles: () -> Unit,
     onAddNewTrack: (String, String, String, Long) -> Unit,
+    isTvReceiverMode: Boolean = false,
+    tvReceiverIp: String = "",
+    isCastingActive: Boolean = false,
+    targetTvIp: String = "",
+    castStatusMessage: String = "",
+    onStartTvReceiver: () -> Unit = {},
+    onStopTvReceiver: () -> Unit = {},
+    onConnectToTv: (String) -> Unit = {},
+    onDisconnectCast: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showAddTrackDialog by remember { mutableStateOf(false) }
+    var showCastDialog by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -162,9 +172,9 @@ fun TVPlayerLayout(
 
                     Spacer(modifier = Modifier.height(36.dp))
 
-                    // 3 TV focusable horizontal buttons
+                    // 4 TV focusable horizontal buttons
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         // Button 1: Import local audio
@@ -188,11 +198,11 @@ fun TVPlayerLayout(
                                 tint = TvNeonCyan,
                                 modifier = Modifier.size(20.dp)
                             )
-                            Spacer(modifier = Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "匯入本機音樂",
+                                text = "匯入音樂",
                                 color = TvNeonCyan,
-                                fontSize = 15.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -200,7 +210,7 @@ fun TVPlayerLayout(
                         // Button 2: Load Sample Tracks
                         Row(
                             modifier = Modifier
-                                .weight(1.1f)
+                                .weight(1f)
                                 .height(56.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(TvNeonPurple.copy(alpha = 0.15f))
@@ -218,11 +228,11 @@ fun TVPlayerLayout(
                                 tint = TvNeonPurple,
                                 modifier = Modifier.size(20.dp)
                             )
-                            Spacer(modifier = Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = "載入太空曲目",
                                 color = TvNeonPurple,
-                                fontSize = 15.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -248,11 +258,41 @@ fun TVPlayerLayout(
                                 tint = TvTextPrimary,
                                 modifier = Modifier.size(20.dp)
                             )
-                            Spacer(modifier = Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "手動新增歌曲",
+                                text = "手動新增",
                                 color = TvTextPrimary,
-                                fontSize = 15.sp,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // Button 4: Cast & Sync
+                        Row(
+                            modifier = Modifier
+                                .weight(1.1f)
+                                .height(56.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(TvNeonPurple.copy(alpha = 0.25f))
+                                .tvFocusable(
+                                    onClick = { showCastDialog = true },
+                                    shape = RoundedCornerShape(12.dp),
+                                    focusedBorderColor = TvNeonPurple
+                                ),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tv,
+                                contentDescription = "Cast & Sync",
+                                tint = TvNeonPurple,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "聲音投射/同步",
+                                color = TvNeonPurple,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -298,19 +338,51 @@ fun TVPlayerLayout(
                             )
                         }
 
-                        // Size badge
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(20.dp))
-                                .background(TvNeonCyan.copy(alpha = 0.15f))
-                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        // Cast/Sync Button & Size badge
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = "${songsList.size} Tracks",
-                                color = TvNeonCyan,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(if (isCastingActive || isTvReceiverMode) TvNeonPurple.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.05f))
+                                    .tvFocusable(
+                                        onClick = { showCastDialog = true },
+                                        shape = RoundedCornerShape(20.dp),
+                                        focusedBorderColor = TvNeonPurple
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tv,
+                                    contentDescription = "Cast/Sync Icon",
+                                    tint = if (isCastingActive || isTvReceiverMode) TvNeonPurple else TvTextSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isCastingActive) "已投射" else if (isTvReceiverMode) "接收中" else "投射/同步",
+                                    color = if (isCastingActive || isTvReceiverMode) TvNeonPurple else TvTextPrimary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(TvNeonCyan.copy(alpha = 0.15f))
+                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "${songsList.size} Tracks",
+                                    color = TvNeonCyan,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
 
@@ -901,6 +973,230 @@ fun TVPlayerLayout(
                             ) {
                                 Text("儲存歌曲", color = TvBgDark, fontWeight = FontWeight.ExtraBold)
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ==================== NEON TV DIALOG FOR AUDIO CAST & SYNC ====================
+        if (showCastDialog) {
+            var ipInput by remember { mutableStateOf(targetTvIp.ifBlank { "192.168.1." }) }
+
+            Dialog(onDismissRequest = { showCastDialog = false }) {
+                Surface(
+                    modifier = Modifier
+                        .width(550.dp)
+                        .wrapContentHeight()
+                        .clip(RoundedCornerShape(24.dp))
+                        .border(1.5.dp, TvNeonPurple, RoundedCornerShape(24.dp)),
+                    color = Color(0xFA0B0E1A)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        // Dialog Header
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tv,
+                                contentDescription = "Cast Dialog Icon",
+                                tint = TvNeonPurple,
+                                modifier = Modifier.size(26.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "無線投放與音訊同步 (Cast & Sync)",
+                                color = TvTextPrimary,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // Split Row for Sender (Left) and Receiver (Right)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(20.dp)
+                        ) {
+                            // Left: Mobile Sender Panel
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color.White.copy(alpha = 0.03f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(14.dp))
+                                    .padding(16.dp)
+                            ) {
+                                Text(
+                                    text = "📱 手機/平板 投射端",
+                                    color = TvNeonCyan,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(bottom = 6.dp)
+                                )
+                                Text(
+                                    text = "將此裝置的音樂、音訊與播放狀態，無線投射至您的電視端播放！",
+                                    color = TvTextSecondary,
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp,
+                                    modifier = Modifier.padding(bottom = 12.dp)
+                                )
+
+                                OutlinedTextField(
+                                    value = ipInput,
+                                    onValueChange = { ipInput = it },
+                                    label = { Text("電視端 IP 位址") },
+                                    placeholder = { Text("例如 192.168.1.15") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = TextFieldDefaults.colors(
+                                        focusedTextColor = TvTextPrimary,
+                                        unfocusedTextColor = TvTextPrimary,
+                                        focusedContainerColor = TvBgCardFocused,
+                                        unfocusedContainerColor = TvBgCard,
+                                        focusedLabelColor = TvNeonCyan,
+                                        unfocusedLabelColor = TvTextSecondary,
+                                        focusedIndicatorColor = TvNeonCyan,
+                                        unfocusedIndicatorColor = Color.White.copy(alpha = 0.1f)
+                                    )
+                                )
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                if (isCastingActive) {
+                                    Button(
+                                        onClick = onDisconnectCast,
+                                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FF3B30)),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("中斷投射", color = Color(0xFFFF453A), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = { onConnectToTv(ipInput.trim()) },
+                                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = TvNeonCyan),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("連接並投射", color = TvBgDark, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = castStatusMessage,
+                                    color = if (isCastingActive) TvNeonCyan else TvTextSecondary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+
+                            // Right: TV Receiver Panel
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color.White.copy(alpha = 0.03f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(14.dp))
+                                    .padding(16.dp)
+                            ) {
+                                Text(
+                                    text = "📺 電視 接收端",
+                                    color = TvNeonPurple,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(bottom = 6.dp)
+                                )
+                                Text(
+                                    text = "啟用接收端模式，讓同區域網路內的手機/平板投射音樂到此電視播放！",
+                                    color = TvTextSecondary,
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp,
+                                    modifier = Modifier.padding(bottom = 12.dp)
+                                )
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                if (isTvReceiverMode) {
+                                    Button(
+                                        onClick = onStopTvReceiver,
+                                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = TvNeonPurple),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("關閉接收端", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(TvNeonPurple.copy(alpha = 0.15f))
+                                            .border(1.dp, TvNeonPurple.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                            .padding(8.dp)
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                                            Text(
+                                                text = "● 接收狀態：作用中",
+                                                color = TvNeonPurple,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "請在手機端輸入此電視 IP:",
+                                                color = TvTextSecondary,
+                                                fontSize = 10.sp
+                                            )
+                                            Text(
+                                                text = tvReceiverIp,
+                                                color = TvTextPrimary,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = onStartTvReceiver,
+                                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f)),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("開啟電視接收模式", color = TvTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "接收端關閉中",
+                                        color = TvTextMuted,
+                                        fontSize = 11.sp,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        // Close button
+                        Button(
+                            onClick = { showCastDialog = false },
+                            modifier = Modifier.width(160.dp).height(46.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.08f)),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("關閉視窗", color = TvTextPrimary, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
